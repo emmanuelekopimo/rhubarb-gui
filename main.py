@@ -27,11 +27,24 @@ class RhubarbWorker(QThread):
 
     def run(self):
         try:
+            # Prepare kwargs for subprocess
+            popen_kwargs = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True
+            }
+            
+            # Suppress the window on Windows
+            if platform.system() == "Windows":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+                popen_kwargs["startupinfo"] = startupinfo
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            
             process = subprocess.Popen(
                 self.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+                **popen_kwargs
             )
 
             for line in process.stderr:
