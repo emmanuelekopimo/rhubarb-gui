@@ -1,4 +1,6 @@
 # Rhubarb Lip Sync GUI
+<img width="802" height="732" alt="Screenshot 2026-02-13 181133" src="https://github.com/user-attachments/assets/0ecfce42-7fc3-4af0-af3d-0c524375ca75" />
+
 
 A user-friendly graphical interface for [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync), a powerful tool for generating lip sync data from audio files. This application simplifies the process of analyzing speech and generating mouth shape information for animation and video projects.
 
