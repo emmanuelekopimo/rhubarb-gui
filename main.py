@@ -83,7 +83,7 @@ class RhubarbGUI(QMainWindow):
         self.init_ui()
         self.setWindowTitle("Rhubarb Lip Sync GUI")
         self.setWindowIcon(self.get_window_icon())
-        self.setGeometry(100, 100, 800, 700)
+        self.setGeometry(100, 50, 800, 700)
 
     def get_window_icon(self):
         """Get the window icon from res/icon.ico"""
@@ -271,6 +271,8 @@ class RhubarbGUI(QMainWindow):
         # Command Preview Section
         preview_group = QGroupBox("Command Preview")
         preview_layout = QVBoxLayout()
+        preview_layout.setContentsMargins(5, 5, 5, 5)
+        preview_layout.setSpacing(0)
         self.command_preview = QTextEdit()
         self.command_preview.setReadOnly(True)
         self.command_preview.setMaximumHeight(80)
