@@ -1,6 +1,5 @@
 # Rhubarb Lip Sync GUI
-<img width="802" height="732" alt="Screenshot 2026-02-13 181133" src="https://github.com/user-attachments/assets/0ecfce42-7fc3-4af0-af3d-0c524375ca75" />
-
+<img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/ae653e4a-c5ab-4c0a-9cc0-4a1b03712a61" />
 
 A user-friendly graphical interface for [Rhubarb Lip Sync](https://github.com/DanielSWolf/rhubarb-lip-sync), a powerful tool for generating lip sync data from audio files. This application simplifies the process of analyzing speech and generating mouth shape information for animation and video projects.
 
@@ -34,7 +33,8 @@ The application automatically detects your operating system and looks for the ap
 - **macOS**: `rhubarb_mac/rhubarb`
 - **Linux**: `rhubarb_linux/rhubarb`
 
-These folders are already included in the project with the necessary binaries and resource files (acoustic models, dictionaries, etc.).
+These folders are already not included in the project folder.
+Get the appropriate binaries [Rhubarb Lip Sync Releases](https://github.com/DanielSWolf/rhubarb-lip-sync/releases)
 
 **Alternative**: If you want to use a custom Rhubarb installation, you can modify the `get_rhubarb_executable()` method in `main.py` to point to your custom executable path.
 
