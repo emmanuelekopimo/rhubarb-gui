@@ -8,10 +8,11 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox,
     QSpinBox, QFileDialog, QTextEdit, QTabWidget, QFormLayout, QProgressBar,
-    QMessageBox
+    QMessageBox, QDialog, QSlider
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
+from PyQt5.QtGui import QFont, QIcon, QPixmap, QColor
+from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 
 
 class RhubarbWorker(QThread):
@@ -75,15 +76,269 @@ class RhubarbWorker(QThread):
             self.error_occurred.emit(f"Exception: {str(e)}")
 
 
+class LipsPreviewDialog(QDialog):
+    """Dialog to preview audio with optional synchronized lip animation"""
+    
+    def __init__(self, parent=None, audio_file=None, sync_data=None, mouth_dir=None):
+        super().__init__(parent)
+        self.audio_file = audio_file
+        self.mouth_dir = mouth_dir or os.path.join(os.path.dirname(__file__), "res", "mouth")
+        self.mouth_shapes = ["A", "B", "C", "D", "E", "F", "G", "H", "X"]
+        self.current_shape_index = 0
+        
+        # Sync data: list of (time_ms, mouth_shape) tuples
+        self.sync_data = sync_data or []
+        self.show_sync = len(self.sync_data) > 0
+        
+        # Media player
+        self.media_player = QMediaPlayer()
+        self.media_player.positionChanged.connect(self.on_position_changed)
+        self.media_player.durationChanged.connect(self.on_duration_changed)
+        self.media_player.stateChanged.connect(self.on_state_changed)
+        
+        # Animation timer for playback
+        self.animation_timer = QTimer()
+        self.animation_timer.timeout.connect(self.on_timer_tick)
+        
+        self.init_ui()
+        self.setWindowTitle("Audio Preview" + (" with Lip Sync" if self.show_sync else ""))
+        
+        if self.show_sync: self.setFixedSize(520,330)
+        else: self.setFixedSize(400,120)
+        self.setModal(False)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        
+        if audio_file and os.path.exists(audio_file):
+            self.load_audio(audio_file)
+
+    def init_ui(self):
+        """Initialize the UI"""
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+
+        # Title
+        title_text = "Audio Preview" + (" with Lip Sync" if self.show_sync else "")
+        title = QLabel(title_text)
+        title_font = QFont()
+        title_font.setPointSize(10)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        main_layout.addWidget(title)
+
+        # Lip display area with white background (only if showing sync)
+        if self.show_sync:
+            display_group = QGroupBox("Mouth Animation")
+            display_layout = QVBoxLayout()
+            display_layout.setContentsMargins(15, 15, 15, 15)
+            display_layout.setSpacing(0)
+            
+            # White background container for mouth image
+            self.mouth_label = QLabel()
+            self.mouth_label.setStyleSheet("background-color: white; border: 2px solid #ddd; border-radius: 5px;")
+            self.mouth_label.setAlignment(Qt.AlignCenter)
+            self.mouth_label.setMinimumSize(280, 120)
+            self.mouth_label.setMaximumSize(280, 120)
+            
+            display_layout.addWidget(self.mouth_label)
+            display_group.setLayout(display_layout)
+            main_layout.addWidget(display_group)
+
+        # Audio info
+        info_layout = QHBoxLayout()
+        self.time_label = QLabel("00:00 / 00:00")
+        self.time_label.setFont(QFont("Courier", 10))
+        info_layout.addWidget(QLabel("Time:"))
+        info_layout.addWidget(self.time_label)
+        info_layout.addStretch()
+        
+        if self.show_sync:
+            self.shape_label = QLabel("Shape: X")
+            self.shape_label.setFont(QFont("Arial", 10))
+            info_layout.addWidget(self.shape_label)
+        
+        main_layout.addLayout(info_layout)
+
+        # Seek slider
+        slider_layout = QHBoxLayout()
+        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider.setRange(0, 100)
+        self.seek_slider.sliderMoved.connect(self.on_seek)
+        slider_layout.addWidget(self.seek_slider)
+        main_layout.addLayout(slider_layout)
+
+        # Control buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(5)
+        
+        self.play_btn = QPushButton("▶ Play")
+        self.play_btn.setMaximumWidth(70)
+        self.play_btn.clicked.connect(self.toggle_playback)
+        button_layout.addWidget(self.play_btn)
+        
+        self.pause_btn = QPushButton("⏸ Pause")
+        self.pause_btn.setMaximumWidth(70)
+        self.pause_btn.clicked.connect(self.pause_playback)
+        button_layout.addWidget(self.pause_btn)
+        
+        self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn.setMaximumWidth(70)
+        self.stop_btn.clicked.connect(self.stop_playback)
+        button_layout.addWidget(self.stop_btn)
+        
+        button_layout.addStretch()
+        
+        self.close_btn = QPushButton("Close")
+        self.close_btn.setMaximumWidth(70)
+        self.close_btn.clicked.connect(self.close)
+        button_layout.addWidget(self.close_btn)
+        
+        main_layout.addLayout(button_layout)
+
+        self.setLayout(main_layout)
+        
+        if self.show_sync:
+            self.load_mouth_image("X")  # Start with neutral shape
+
+    def load_audio(self, file_path):
+        """Load an audio file"""
+        if os.path.exists(file_path):
+            self.media_player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
+
+    def load_mouth_image(self, shape):
+        """Load and display a mouth shape image"""
+        mouth_image_path = os.path.join(self.mouth_dir, f"{shape}.png")
+        
+        if os.path.exists(mouth_image_path):
+            pixmap = QPixmap(mouth_image_path)
+            # Scale to fit within the label while maintaining aspect ratio
+            label_width = self.mouth_label.width() - 20
+            label_height = self.mouth_label.height() - 20
+            if label_width > 0 and label_height > 0:
+                scaled_pixmap = pixmap.scaledToHeight(label_height, Qt.SmoothTransformation)
+                # If still too wide, scale to width instead
+                if scaled_pixmap.width() > label_width:
+                    scaled_pixmap = pixmap.scaledToWidth(label_width, Qt.SmoothTransformation)
+                self.mouth_label.setPixmap(scaled_pixmap)
+            else:
+                self.mouth_label.setPixmap(pixmap)
+            self.shape_label.setText(f"Shape: {shape}")
+        else:
+            # Fallback: show a placeholder
+            self.mouth_label.setText(f"Mouth shape '{shape}' not found")
+            self.shape_label.setText(f"Shape: {shape}")
+
+    def toggle_playback(self):
+        """Toggle play/pause"""
+        if self.media_player.state() == QMediaPlayer.PlayingState:
+            self.pause_playback()
+        else:
+            self.play_playback()
+
+    def play_playback(self):
+        """Start playing audio"""
+        self.animation_timer.start(16)  # ~60fps for smooth updates during playback
+        self.media_player.play()
+
+    def pause_playback(self):
+        """Pause audio playback"""
+        self.animation_timer.stop()
+        self.media_player.pause()
+
+    def stop_playback(self):
+        """Stop audio and reset"""
+        self.animation_timer.stop()
+        self.media_player.stop()
+        self.media_player.setPosition(0)
+        self.seek_slider.setValue(0)
+        if self.show_sync:
+            self.load_mouth_image("X")
+
+    def on_position_changed(self, position):
+        """Update UI when audio position changes"""
+        # The timer handles updates during playback for smooth sync
+        # This signal might fire irregularly, so we just ensure slider is in sync
+        duration = self.media_player.duration()
+        if duration > 0:
+            self.seek_slider.blockSignals(True)
+            self.seek_slider.setValue(int((position / duration) * 100))
+            self.seek_slider.blockSignals(False)
+
+    def update_position_display(self, position_ms):
+        """Update the time display based on current position"""
+        duration = self.media_player.duration()
+        if duration > 0:
+            # Update time display
+            current_sec = position_ms // 1000
+            total_sec = duration // 1000
+            self.time_label.setText(
+                f"{current_sec // 60:02d}:{current_sec % 60:02d} / {total_sec // 60:02d}:{total_sec % 60:02d}"
+            )
+
+    def on_duration_changed(self, duration):
+        """Called when audio duration is determined"""
+        pass
+
+    def on_state_changed(self, state):
+        """Handle state changes"""
+        if state != QMediaPlayer.PlayingState:
+            self.animation_timer.stop()
+
+    def on_timer_tick(self):
+        """Called by animation timer - update position and sync display"""
+        # Directly query current position from media player to ensure smooth updates
+        position = self.media_player.position()
+        self.update_position_display(position)
+        
+        if self.show_sync:
+            self.update_mouth_from_sync(position)
+
+    def on_seek(self, value):
+        """Handle seek slider movement"""
+        duration = self.media_player.duration()
+        if duration > 0:
+            position = int((value / 100) * duration)
+            self.media_player.setPosition(position)
+            # Update mouth immediately when scrubbing
+            if self.show_sync:
+                self.update_position_display(position)
+                self.update_mouth_from_sync(position)
+
+    def update_mouth_from_sync(self, position_ms):
+        """Update mouth shape based on current position using sync data"""
+        if not self.sync_data:
+            return
+        
+        # Find the mouth shape for the current time
+        current_shape = "X"  # Default to neutral
+        for time_ms, shape in reversed(self.sync_data):
+            if position_ms >= time_ms:
+                current_shape = shape
+                break
+        
+        self.load_mouth_image(current_shape)
+
+    def closeEvent(self, event):
+        """Clean up when dialog closes"""
+        self.animation_timer.stop()
+        self.stop_playback()
+        super().closeEvent(event)
+
+
+
 class RhubarbGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.rhubarb_exe = self.get_rhubarb_executable()
         self.worker = None
+        self.sync_data = []  # Store parsed sync data: [(time_ms, mouth_shape), ...]
+        self.last_output_file = None  # Track last output file for re-parsing
+        self.current_preview_dialog = None  # Track currently open preview dialog
         self.init_ui()
         self.setWindowTitle("Rhubarb Lip Sync GUI")
         self.setWindowIcon(self.get_window_icon())
-        self.setGeometry(100, 50, 800, 700)
+        self.setGeometry(50, 100, 800, 600)
+        self.setMinimumSize(600, 400)
 
     def get_window_icon(self):
         """Get the window icon from res/icon.ico"""
@@ -226,15 +481,7 @@ class RhubarbGUI(QMainWindow):
         advanced_layout = QFormLayout()
         tabs.addTab(advanced_tab, "Advanced Settings")
 
-        # Quiet mode
-        self.quiet_mode = QCheckBox("Quiet mode (suppress progress messages)")
-        advanced_layout.addRow("", self.quiet_mode)
 
-        # Machine readable
-        self.machine_readable = QCheckBox("Machine readable output (JSON format)")
-        self.machine_readable.setChecked(True)
-        self.machine_readable.setToolTip("Enables parsing of progress data")
-        advanced_layout.addRow("", self.machine_readable)
 
         # Console level
         self.console_level = QComboBox()
@@ -273,11 +520,15 @@ class RhubarbGUI(QMainWindow):
         preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(5, 5, 5, 5)
         preview_layout.setSpacing(0)
+        preview_group.setMaximumHeight(100)
         self.command_preview = QTextEdit()
         self.command_preview.setReadOnly(True)
         self.command_preview.setMaximumHeight(80)
         self.command_preview.setPlaceholderText("Command preview will appear here...")
         self.command_preview.setStyleSheet("background-color: #f5f5f5; font-family: monospace; font-size: 9pt;")
+        self.command_preview.setContentsMargins(0, 0, 0, 0)
+        self.command_preview.document().setDocumentMargin(0)
+        self.command_preview.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         preview_layout.addWidget(self.command_preview)
         preview_group.setLayout(preview_layout)
         main_layout.addWidget(preview_group)
@@ -304,8 +555,16 @@ class RhubarbGUI(QMainWindow):
         
         self.run_btn = QPushButton("Run Rhubarb Lip Sync")
         self.run_btn.clicked.connect(self.run_rhubarb)
-        self.run_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
         button_layout.addWidget(self.run_btn)
+
+        self.preview_audio_btn = QPushButton("Preview Audio")
+        self.preview_audio_btn.clicked.connect(self.open_audio_preview)
+        button_layout.addWidget(self.preview_audio_btn)
+
+        self.preview_sync_btn = QPushButton("Preview with Lip Sync")
+        self.preview_sync_btn.clicked.connect(self.open_sync_preview)
+        self.preview_sync_btn.setEnabled(False)  # Disabled until sync data is available
+        button_layout.addWidget(self.preview_sync_btn)
 
         self.clear_btn = QPushButton("Clear Output")
         self.clear_btn.clicked.connect(self.clear_output)
@@ -321,8 +580,6 @@ class RhubarbGUI(QMainWindow):
         self.dialog_file.textChanged.connect(self.update_command_preview)
         self.dat_frame_rate.valueChanged.connect(self.update_command_preview)
         self.dat_preston_blair.toggled.connect(self.update_command_preview)
-        self.quiet_mode.toggled.connect(self.update_command_preview)
-        self.machine_readable.toggled.connect(self.update_command_preview)
         self.console_level.currentTextChanged.connect(self.update_command_preview)
         self.log_file.textChanged.connect(self.update_command_preview)
         self.log_level.currentTextChanged.connect(self.update_command_preview)
@@ -410,11 +667,8 @@ class RhubarbGUI(QMainWindow):
         
         command.extend(["-o", output_file])
         
-        if self.quiet_mode.isChecked():
-            command.append("--quiet")
-        
-        if self.machine_readable.isChecked():
-            command.append("--machineReadable")
+        # Machine readable is always enabled for progress tracking
+        command.append("--machineReadable")
         
         console_level = self.console_level.currentText()
         if console_level != "error":
@@ -494,13 +748,8 @@ class RhubarbGUI(QMainWindow):
         output = self.output_file.text().strip()
         command.extend(["-o", output])
 
-        # Add quiet mode
-        if self.quiet_mode.isChecked():
-            command.append("--quiet")
-
-        # Add machine readable (for progress tracking)
-        if self.machine_readable.isChecked():
-            command.append("--machineReadable")
+        # Add machine readable (required for progress tracking)
+        command.append("--machineReadable")
 
         # Add console level
         console_level = self.console_level.currentText()
@@ -576,6 +825,15 @@ class RhubarbGUI(QMainWindow):
         """Called when process finishes successfully"""
         self.run_btn.setEnabled(True)
         self.progress_bar.setValue(100)
+        
+        # Parse the output file to extract sync data
+        output_file = self.output_file.text().strip()
+        if output_file and os.path.exists(output_file):
+            self.parse_sync_data(output_file)
+            # Enable the sync preview button if we have sync data
+            if self.sync_data:
+                self.preview_sync_btn.setEnabled(True)
+                self.status_text.append("\n✓ Sync data loaded. You can now preview with lip sync!")
 
     def on_error(self, error_msg):
         """Called when an error occurs"""
@@ -586,6 +844,213 @@ class RhubarbGUI(QMainWindow):
         """Clear the status output"""
         self.status_text.clear()
         self.progress_bar.setValue(0)
+
+    def open_audio_preview(self):
+        """Open audio-only preview dialog"""
+        audio_file = self.input_file.text().strip()
+        
+        if not audio_file:
+            QMessageBox.warning(self, "No Audio File", 
+                              "Please select an audio file to preview.")
+            return
+        
+        if not os.path.exists(audio_file):
+            QMessageBox.critical(self, "File Not Found", 
+                               f"Audio file not found:\n{audio_file}")
+            return
+        
+        # Close existing preview dialog if any
+        if self.current_preview_dialog is not None:
+            self.current_preview_dialog.close()
+            self.current_preview_dialog = None
+        
+        # Open preview dialog (audio only, no sync data)
+        preview_dialog = LipsPreviewDialog(self, audio_file, sync_data=None)
+        preview_dialog.destroyed.connect(lambda: self.on_dialog_closed())
+        self.current_preview_dialog = preview_dialog
+        preview_dialog.show()
+
+    def open_sync_preview(self):
+        """Open preview dialog with lip sync data"""
+        audio_file = self.input_file.text().strip()
+        
+        if not audio_file:
+            QMessageBox.warning(self, "No Audio File", 
+                              "Please select an audio file to preview.")
+            return
+        
+        if not os.path.exists(audio_file):
+            QMessageBox.critical(self, "File Not Found", 
+                               f"Audio file not found:\n{audio_file}")
+            return
+        
+        if not self.sync_data:
+            QMessageBox.warning(self, "No Sync Data", 
+                              "Please run Rhubarb Lip Sync first to generate sync data.")
+            return
+        
+        # Close existing preview dialog if any
+        if self.current_preview_dialog is not None:
+            self.current_preview_dialog.close()
+            self.current_preview_dialog = None
+        
+        # Open preview dialog with sync data
+        preview_dialog = LipsPreviewDialog(self, audio_file, sync_data=self.sync_data)
+        preview_dialog.destroyed.connect(lambda: self.on_dialog_closed())
+        self.current_preview_dialog = preview_dialog
+        preview_dialog.show()
+
+    def parse_sync_data(self, output_file):
+        """Parse the output file and extract sync data"""
+        self.sync_data = []
+        file_format = self.get_format_from_extension(output_file)
+        
+        try:
+            if file_format == "tsv":
+                self.parse_tsv_sync(output_file)
+            elif file_format == "json":
+                self.parse_json_sync(output_file)
+            elif file_format == "xml":
+                self.parse_xml_sync(output_file)
+            elif file_format == "dat":
+                self.parse_dat_sync(output_file)
+        except Exception as e:
+            self.status_text.append(f"\n⚠ Warning: Could not parse sync data: {str(e)}")
+
+    def parse_tsv_sync(self, file_path):
+        """Parse TSV format sync data"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    parts = line.split('\t')
+                    if len(parts) >= 2:
+                        try:
+                            # TSV format: start_time (float in seconds) shape (character)
+                            start_time = float(parts[0])
+                            shape = parts[1].strip().upper()
+                            # Convert to milliseconds and validate shape
+                            if shape in "ABCDEFGHX":
+                                self.sync_data.append((int(start_time * 1000), shape))
+                        except (ValueError, IndexError):
+                            continue
+        except Exception as e:
+            raise Exception(f"Error parsing TSV: {str(e)}")
+
+    def parse_json_sync(self, file_path):
+        """Parse JSON format sync data"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Handle different JSON structures
+            if isinstance(data, list):
+                # Array of mouth shapes
+                for item in data:
+                    if isinstance(item, dict):
+                        start = item.get('start') or item.get('time') or item.get('start_time')
+                        shape = item.get('shape') or item.get('mouth') or item.get('character')
+                        if start is not None and shape:
+                            try:
+                                start_ms = int(float(start) * 1000)
+                                shape_str = str(shape).strip().upper()
+                                if shape_str in "ABCDEFGHX":
+                                    self.sync_data.append((start_ms, shape_str))
+                            except (ValueError, TypeError):
+                                continue
+            elif isinstance(data, dict):
+                # Object with metadata, look for mouthShapes or similar
+                mouth_shapes = data.get('mouthShapes') or data.get('mouth_shapes') or []
+                for item in mouth_shapes:
+                    if isinstance(item, dict):
+                        start = item.get('start') or item.get('time')
+                        shape = item.get('shape') or item.get('value')
+                        if start is not None and shape:
+                            try:
+                                start_ms = int(float(start) * 1000)
+                                shape_str = str(shape).strip().upper()
+                                if shape_str in "ABCDEFGHX":
+                                    self.sync_data.append((start_ms, shape_str))
+                            except (ValueError, TypeError):
+                                continue
+        except Exception as e:
+            raise Exception(f"Error parsing JSON: {str(e)}")
+
+    def parse_xml_sync(self, file_path):
+        """Parse XML format sync data"""
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            
+            # Look for mouth shape elements
+            for element in root.iter():
+                # Handle various XML structure possibilities
+                if 'mouth' in element.tag.lower() or 'shape' in element.tag.lower():
+                    start = element.get('start') or element.get('time')
+                    shape = element.text or element.get('shape') or element.get('value')
+                    
+                    if start and shape:
+                        try:
+                            start_ms = int(float(start) * 1000)
+                            shape_str = shape.strip().upper()
+                            if shape_str in "ABCDEFGHX":
+                                self.sync_data.append((start_ms, shape_str))
+                        except (ValueError, TypeError):
+                            continue
+        except Exception as e:
+            raise Exception(f"Error parsing XML: {str(e)}")
+
+    def parse_dat_sync(self, file_path):
+        """Parse DAT format sync data (for Moho/OpenToonz)"""
+        try:
+            # Get frame rate from settings
+            frame_rate = self.dat_frame_rate.value()
+            if frame_rate == 0:
+                frame_rate = 24  # Default to 24 if not set
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            frame = int(parts[0])
+                            shape = parts[1].strip().upper()
+                            # Convert frame number to milliseconds using actual frame rate
+                            time_ms = int((frame / float(frame_rate)) * 1000)
+                            
+                            # Map Preston Blair names to single letter if needed
+                            shape_map = {
+                                'A': 'A', 'B': 'B', 'C': 'C', 'D': 'D', 'E': 'E',
+                                'F': 'F', 'G': 'G', 'H': 'H', 'X': 'X',
+                                'REST': 'X', 'AI': 'A', 'O': 'O', 'U': 'U',
+                                'TEETH': 'E', 'LIPS': 'F'
+                            }
+                            final_shape = shape_map.get(shape, shape[0] if shape else 'X')
+                            
+                            if final_shape in "ABCDEFGHX":
+                                self.sync_data.append((time_ms, final_shape))
+                        except (ValueError, IndexError):
+                            continue
+        except Exception as e:
+            raise Exception(f"Error parsing DAT: {str(e)}")
+
+    def open_preview(self):
+        """Open the audio preview dialog"""
+        self.open_audio_preview()
+    
+    def on_dialog_closed(self):
+        """Called when a preview dialog is closed"""
+        if self.current_preview_dialog is not None:
+            self.current_preview_dialog = None
+
 
 
 def main():
